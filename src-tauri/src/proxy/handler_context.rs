@@ -8,6 +8,10 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
+    session_router::{
+        display_name_from_project_dir, extract_project_dir,
+        find_project_dir_from_claude_sessions,
+    },
     types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
@@ -59,6 +63,10 @@ pub struct RequestContext {
     pub session_id: String,
     /// Session ID 是否由客户端提供。生成的 UUID 不能作为上游缓存 key，否则每个请求都会换 key。
     pub session_client_provided: bool,
+    /// 当前请求是否走的 session 级 override（auto-pin 或显式设置）。
+    /// 如果是 true，forwarder 不应把这次请求的 provider 写回 current_providers，
+    /// 否则会覆盖用户在 UI 上手动选择的全局默认供应商。
+    pub is_session_routed: bool,
     /// 整流器配置
     pub rectifier_config: RectifierConfig,
     /// 优化器配置
@@ -124,11 +132,21 @@ impl RequestContext {
             session_result.client_provided
         );
 
-        // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
+        // 使用共享的 ProviderRouter 选择 Provider（支持 session 级路由）
         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
+        // 先查 session 是否已有 override，用于标记 is_session_routed
+        let is_session_routed = state
+            .session_router
+            .get_override_provider(app_type_str, &session_id)
+            .await
+            .is_some();
         let providers = state
             .provider_router
-            .select_providers(app_type_str)
+            .select_providers_for_session(
+                app_type_str,
+                &session_id,
+                &state.session_router,
+            )
             .await
             .map_err(|e| match e {
                 crate::error::AppError::AllProvidersCircuitOpen => {
@@ -143,14 +161,51 @@ impl RequestContext {
             .cloned()
             .ok_or(ProxyError::NoAvailableProvider)?;
 
+        // 提取项目目录：优先从请求体 metadata，fallback 到 Claude Code 本地 session 文件
+        let project_dir = extract_project_dir(body)
+            .or_else(|| find_project_dir_from_claude_sessions(&session_id));
         log::debug!(
-            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
+            "[{}] session={} project_dir={:?}",
+            tag,
+            session_id,
+            project_dir,
+        );
+        let display_name = display_name_from_project_dir(
+            project_dir.as_deref(),
+            &session_id,
+        );
+
+        log::debug!(
+            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}, project: {}",
             tag,
             provider.name,
             request_model,
             providers.len(),
-            session_id
+            session_id,
+            project_dir.as_deref().unwrap_or("-")
         );
+
+        // 注册 session 到路由表（每次请求更新 last_active_at）
+        state.session_router.record_session(
+            app_type_str,
+            &session_id,
+            &provider.id,
+            display_name,
+            project_dir,
+            session_result.source.into(),
+        ).await;
+
+        // 自动锁定：如果 session 没有显式覆盖，自动创建一个到当前 provider
+        // 这样全局切换时不会影响已有 session
+        if state.session_router
+            .get_override_provider(app_type_str, &session_id)
+            .await
+            .is_none()
+        {
+            state.session_router
+                .set_override(app_type_str, &session_id, &provider.id)
+                .await;
+        }
 
         Ok(Self {
             start_time,
@@ -164,6 +219,7 @@ impl RequestContext {
             app_type,
             session_id,
             session_client_provided: session_result.client_provided,
+            is_session_routed,
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,

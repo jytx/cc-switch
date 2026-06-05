@@ -14,6 +14,7 @@ use super::{
     log_codes::srv as log_srv,
     provider_router::ProviderRouter,
     providers::{codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore},
+    session_router::SessionRouter,
     types::*,
     ProxyError,
 };
@@ -48,6 +49,8 @@ pub struct ProxyState {
     pub app_handle: Option<tauri::AppHandle>,
     /// 故障转移切换管理器
     pub failover_manager: Arc<FailoverSwitchManager>,
+    /// Session 级供应商路由器
+    pub session_router: Arc<SessionRouter>,
 }
 
 /// 代理HTTP服务器
@@ -69,6 +72,8 @@ impl ProxyServer {
         let provider_router = Arc::new(ProviderRouter::new(db.clone()));
         // 创建故障转移切换管理器
         let failover_manager = Arc::new(FailoverSwitchManager::new(db.clone()));
+        // 创建 Session 级路由器（从 JSON 文件恢复持久化的 override）
+        let session_router = Arc::new(SessionRouter::new());
 
         let state = ProxyState {
             db,
@@ -81,6 +86,7 @@ impl ProxyServer {
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle,
             failover_manager,
+            session_router,
         };
 
         Self {
@@ -260,14 +266,75 @@ impl ProxyServer {
 
         // 从 current_providers HashMap 获取每个应用类型当前正在使用的 provider
         let current_providers = self.state.current_providers.read().await;
+
+        // 收集所有活跃 session 的路由信息
+        let all_sessions = self.state.session_router.list_all_sessions().await;
+
+        // 按 (app_type, provider_id) 分组 session
+        let mut sessions_by_target: std::collections::HashMap<(String, String), Vec<crate::proxy::session_router::SessionRouteEntry>> =
+            std::collections::HashMap::new();
+
+        for info in &all_sessions {
+            // 查询该 session 是否有显式覆盖
+            let override_provider = self
+                .state
+                .session_router
+                .get_override_provider(&info.app_type, &info.session_id)
+                .await;
+            let is_routed = override_provider.is_some();
+            let effective_provider = override_provider
+                .unwrap_or_else(|| info.provider_id.clone());
+
+            let entry = crate::proxy::session_router::SessionRouteEntry {
+                session_id: info.session_id.clone(),
+                app_type: info.app_type.clone(),
+                provider_id: effective_provider.clone(),
+                display_name: info.display_name.clone(),
+                project_dir: info.project_dir.clone(),
+                last_active_at: info.last_active_at,
+                is_routed,
+            };
+            sessions_by_target
+                .entry((info.app_type.clone(), effective_provider))
+                .or_default()
+                .push(entry);
+        }
+
+        // 构建活跃目标列表
         status.active_targets = current_providers
             .iter()
-            .map(|(app_type, (provider_id, provider_name))| ActiveTarget {
-                app_type: app_type.clone(),
-                provider_id: provider_id.clone(),
-                provider_name: provider_name.clone(),
+            .map(|(app_type, (provider_id, provider_name))| {
+                let sessions = sessions_by_target
+                    .remove(&(app_type.clone(), provider_id.clone()))
+                    .unwrap_or_default();
+                ActiveTarget {
+                    app_type: app_type.clone(),
+                    provider_id: provider_id.clone(),
+                    provider_name: provider_name.clone(),
+                    sessions,
+                }
             })
             .collect();
+
+        // 补充：session 路由到其他 provider 但不在 current_providers 中的条目
+        for ((app_type, provider_id), sessions) in sessions_by_target {
+            if !sessions.is_empty() {
+                let provider_name = self
+                    .state
+                    .db
+                    .get_provider_by_id(&provider_id, &app_type)
+                    .ok()
+                    .flatten()
+                    .map(|p| p.name)
+                    .unwrap_or_else(|| provider_id.clone());
+                status.active_targets.push(ActiveTarget {
+                    app_type,
+                    provider_id,
+                    provider_name,
+                    sessions,
+                });
+            }
+        }
 
         status
     }
@@ -282,6 +349,11 @@ impl ProxyServer {
             app_type.to_string(),
             (provider_id.to_string(), provider_name.to_string()),
         );
+    }
+
+    /// 获取 SessionRouter 的引用（供 ProxyService 委托调用）
+    pub fn session_router(&self) -> &Arc<SessionRouter> {
+        &self.state.session_router
     }
 
     fn build_router(&self) -> Router {

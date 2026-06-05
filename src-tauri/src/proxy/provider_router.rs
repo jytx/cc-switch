@@ -7,6 +7,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::proxy::session_router::SessionRouter;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -108,7 +109,44 @@ impl ProviderRouter {
         Ok(result)
     }
 
-    /// 请求执行前获取熔断器“放行许可”
+    /// Session 感知的供应商选择
+    ///
+    /// 优先查找 session 级覆盖，无覆盖时 fallback 到全局路由逻辑。
+    /// 有覆盖时只返回指定的 provider（用户明确指定，不走故障转移）。
+    pub async fn select_providers_for_session(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        session_router: &SessionRouter,
+    ) -> Result<Vec<Provider>, AppError> {
+        // 先查 session 有无显式覆盖
+        if let Some(override_provider_id) =
+            session_router.get_override_provider(app_type, session_id).await
+        {
+            log::debug!(
+                "[{}] Session {} -> override provider: {}",
+                app_type, session_id, override_provider_id
+            );
+            if let Some(provider) =
+                self.db.get_provider_by_id(&override_provider_id, app_type)?
+            {
+                return Ok(vec![provider]);
+            }
+            // 覆盖的 provider 不存在（可能被删除了），清除覆盖并 fallback
+            log::warn!(
+                "[{}] Session {} override provider {} not found, falling back to global",
+                app_type, session_id, override_provider_id
+            );
+            session_router
+                .remove_override(app_type, session_id)
+                .await;
+        }
+
+        // 无覆盖：fallback 到全局路由
+        self.select_providers(app_type).await
+    }
+
+    /// 请求执行前获取熔断器放行许可
     ///
     /// - Closed：直接放行
     /// - Open：超时到达后切到 HalfOpen 并放行一次探测

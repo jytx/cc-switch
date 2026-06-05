@@ -117,4 +117,23 @@ export const proxyApi = {
   async setPricingModelSource(appType: string, value: string): Promise<void> {
     return invoke("set_pricing_model_source", { appType, value });
   },
+
+  // ========== Session 级路由 API ==========
+
+  // 设置 session 的供应商覆盖
+  async setSessionRoute(
+    appType: string,
+    sessionId: string,
+    providerId: string,
+  ): Promise<void> {
+    return invoke("set_session_route", { appType, sessionId, providerId });
+  },
+
+  // 移除 session 的供应商覆盖
+  async removeSessionRoute(
+    appType: string,
+    sessionId: string,
+  ): Promise<void> {
+    return invoke("remove_session_route", { appType, sessionId });
+  },
 };

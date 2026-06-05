@@ -7,6 +7,7 @@ use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::proxy::server::ProxyServer;
+use crate::proxy::session_router::{ActiveSessionInfo, SessionRouteEntry};
 use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
 use crate::services::provider::{
@@ -2441,6 +2442,94 @@ impl ProxyService {
                 ..Default::default()
             })
         }
+    }
+
+    // ---- Session 路由委托方法 ----
+
+    /// 列出指定应用的所有活跃 session 路由
+    pub async fn list_session_routes(
+        &self,
+        app_type: &str,
+    ) -> Result<Vec<SessionRouteEntry>, String> {
+        let server = self.server.read().await;
+        let Some(server) = server.as_ref() else {
+            return Ok(vec![]);
+        };
+        Ok(server.session_router().list_sessions(app_type).await)
+    }
+
+    /// 设置 session 的供应商覆盖
+    pub async fn set_session_route(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        provider_id: &str,
+    ) -> Result<(), String> {
+        let server = self.server.read().await;
+        let Some(server) = server.as_ref() else {
+            return Err("代理服务未运行".to_string());
+        };
+        server
+            .session_router()
+            .set_override(app_type, session_id, provider_id)
+            .await;
+
+        // 通知前端刷新
+        if let Some(handle) = self.app_handle.read().await.as_ref() {
+            let _ = handle.emit(
+                "session-route-changed",
+                serde_json::json!({
+                    "appType": app_type,
+                    "sessionId": session_id,
+                    "providerId": provider_id,
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    /// 移除 session 的供应商覆盖
+    pub async fn remove_session_route(
+        &self,
+        app_type: &str,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let server = self.server.read().await;
+        let Some(server) = server.as_ref() else {
+            return Err("代理服务未运行".to_string());
+        };
+        server
+            .session_router()
+            .remove_override(app_type, session_id)
+            .await;
+
+        if let Some(handle) = self.app_handle.read().await.as_ref() {
+            let _ = handle.emit(
+                "session-route-changed",
+                serde_json::json!({
+                    "appType": app_type,
+                    "sessionId": session_id,
+                    "providerId": serde_json::Value::Null,
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    /// 获取指定 provider 下的活跃 session 列表
+    pub async fn get_provider_sessions(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+    ) -> Result<Vec<ActiveSessionInfo>, String> {
+        let server = self.server.read().await;
+        let Some(server) = server.as_ref() else {
+            return Ok(vec![]);
+        };
+        Ok(server
+            .session_router()
+            .sessions_for_provider(app_type, provider_id)
+            .await)
     }
 
     /// 获取代理配置

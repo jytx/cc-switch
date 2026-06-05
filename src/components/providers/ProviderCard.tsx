@@ -26,6 +26,8 @@ import {
 } from "@/utils/providerConfigUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import type { SessionRouteEntry } from "@/types/proxy";
+import { SessionPill } from "@/components/proxy/SessionPill";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -63,6 +65,10 @@ interface ProviderCardProps {
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
+  // Session 级路由：当前供应商关联的活跃 session 列表
+  activeSessions?: SessionRouteEntry[];
+  // Session 级路由：所有可用的 provider 列表（供 session pill 切换）
+  allProviders?: Provider[];
 }
 
 /** 判断是否为官方供应商（无自定义 base URL / API key，直连官方 API） */
@@ -162,6 +168,9 @@ export function ProviderCard({
   // OpenClaw: default model
   isDefaultModel,
   onSetAsDefault,
+  // Session 级路由：活跃 session 列表
+  activeSessions = [],
+  allProviders = [],
 }: ProviderCardProps) {
   const { t } = useTranslation();
 
@@ -449,6 +458,23 @@ export function ProviderCard({
               >
                 <span className="truncate">{displayUrl}</span>
               </button>
+            )}
+
+            {/* 代理接管模式下展示关联的 session 标签（可点击切换 provider） */}
+            {isProxyTakeover && activeSessions.length > 0 && (
+              <div
+                className="flex flex-wrap items-center gap-1 mt-1"
+                data-testid="session-pill-container"
+              >
+                {activeSessions.map((session) => (
+                  <SessionPill
+                    key={session.sessionId}
+                    session={session}
+                    appId={appId}
+                    providers={allProviders}
+                  />
+                ))}
+              </div>
             )}
           </div>
         </div>

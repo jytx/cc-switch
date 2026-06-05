@@ -667,15 +667,22 @@ function ProviderQueueGroup({
 
       {/* 供应商列表 */}
       <div className="space-y-1.5">
-        {targets.map((target, index) => (
-          <ProviderQueueItem
-            key={target.id}
-            provider={target}
-            priority={index + 1}
-            appType={appType}
-            isCurrent={activeTarget?.provider_id === target.id}
-          />
-        ))}
+        {targets.map((target, index) => {
+          // 查找该供应商对应的 session 路由条目
+          const targetEntry = status.active_targets?.find(
+            (t) => t.provider_id === target.id && t.app_type === appType,
+          );
+          return (
+            <ProviderQueueItem
+              key={target.id}
+              provider={target}
+              priority={index + 1}
+              appType={appType}
+              isCurrent={activeTarget?.provider_id === target.id}
+              sessions={targetEntry?.sessions}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -689,6 +696,8 @@ interface ProviderQueueItemProps {
   priority: number;
   appType: string;
   isCurrent: boolean;
+  /** 当前供应商关联的 session 路由条目 */
+  sessions?: import("@/types/proxy").SessionRouteEntry[];
 }
 
 function ProviderQueueItem({
@@ -696,42 +705,59 @@ function ProviderQueueItem({
   priority,
   appType,
   isCurrent,
+  sessions = [],
 }: ProviderQueueItemProps) {
   const { t } = useTranslation();
   const { data: health } = useProviderHealth(provider.id, appType);
 
   return (
     <div
-      className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm transition-colors ${
+      className={`rounded-md border px-3 py-2 text-sm transition-colors ${
         isCurrent
           ? "border-primary/40 bg-primary/10 text-primary font-medium"
           : "border-border bg-background/60"
       }`}
     >
-      <div className="flex items-center gap-2">
-        <span
-          className={`flex-shrink-0 flex items-center justify-center w-5 h-5 rounded-full text-xs font-bold ${
-            isCurrent
-              ? "bg-primary text-primary-foreground"
-              : "bg-muted text-muted-foreground"
-          }`}
-        >
-          {priority}
-        </span>
-        <span className={isCurrent ? "" : "text-foreground"}>
-          {provider.name}
-        </span>
-        {isCurrent && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary">
-            {t("provider.inUse")}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span
+            className={`flex-shrink-0 flex items-center justify-center w-5 h-5 rounded-full text-xs font-bold ${
+              isCurrent
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted text-muted-foreground"
+            }`}
+          >
+            {priority}
           </span>
-        )}
+          <span className={isCurrent ? "" : "text-foreground"}>
+            {provider.name}
+          </span>
+          {isCurrent && (
+            <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary">
+              {t("provider.inUse")}
+            </span>
+          )}
+        </div>
+        {/* 健康徽章 */}
+        <ProviderHealthBadge
+          consecutiveFailures={health?.consecutive_failures ?? 0}
+          isHealthy={health?.is_healthy}
+        />
       </div>
-      {/* 健康徽章 */}
-      <ProviderHealthBadge
-        consecutiveFailures={health?.consecutive_failures ?? 0}
-        isHealthy={health?.is_healthy}
-      />
+      {/* Session 标签展示 */}
+      {sessions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 mt-1.5 ml-7">
+          {sessions.map((session) => (
+            <span
+              key={session.sessionId}
+              className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-teal-500/10 text-teal-600 dark:text-teal-400"
+              title={session.projectDir || session.sessionId}
+            >
+              {session.displayName}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

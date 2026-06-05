@@ -1434,6 +1434,12 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
+
+            // Session 级供应商路由
+            commands::list_session_routes,
+            commands::set_session_route,
+            commands::remove_session_route,
+            commands::get_provider_sessions,
         ]);
 
     let app = builder

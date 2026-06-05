@@ -19,6 +19,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
+import type { SessionRouteEntry } from "@/types/proxy";
 import { providersApi } from "@/lib/api/providers";
 import { useDragSort } from "@/hooks/useDragSort";
 import {
@@ -68,6 +69,8 @@ interface ProviderListProps {
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管）
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
   onSetAsDefault?: (provider: Provider) => void; // OpenClaw: set as default model
+  // Session 级路由：按 provider_id 分组的活跃 session 映射
+  sessionsByProvider?: Record<string, SessionRouteEntry[]>;
 }
 
 export function ProviderList({
@@ -90,6 +93,7 @@ export function ProviderList({
   isProxyTakeover = false,
   activeProviderId,
   onSetAsDefault,
+  sessionsByProvider = {},
 }: ProviderListProps) {
   const { t } = useTranslation();
   const { checkProvider, isChecking } = useStreamCheck(appId);
@@ -460,6 +464,10 @@ export function ProviderList({
                 onSetAsDefault={
                   onSetAsDefault ? () => onSetAsDefault(provider) : undefined
                 }
+                // Session 级路由：传递当前供应商关联的活跃 session
+                activeSessions={sessionsByProvider[provider.id] || []}
+                // Session 级路由：所有可用的 provider 列表
+                allProviders={Object.values(providers)}
               />
             );
           })}
@@ -571,6 +579,7 @@ export function ProviderList({
           setPendingTestProvider(null);
         }}
       />
+
     </div>
   );
 }
@@ -604,6 +613,10 @@ interface SortableProviderCardProps {
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
+  // Session 级路由：活跃 session 列表
+  activeSessions?: SessionRouteEntry[];
+  // Session 级路由：所有可用的 provider 列表
+  allProviders?: Provider[];
 }
 
 function SortableProviderCard({
@@ -634,6 +647,8 @@ function SortableProviderCard({
   activeProviderId,
   isDefaultModel,
   onSetAsDefault,
+  activeSessions,
+  allProviders,
 }: SortableProviderCardProps) {
   const {
     setNodeRef,
@@ -687,6 +702,9 @@ function SortableProviderCard({
         // OpenClaw: default model
         isDefaultModel={isDefaultModel}
         onSetAsDefault={onSetAsDefault}
+        // Session 级路由
+        activeSessions={activeSessions}
+        allProviders={allProviders}
       />
     </div>
   );

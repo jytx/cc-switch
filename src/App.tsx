@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
@@ -68,6 +68,7 @@ import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { ClaudeDesktopRouteToggle } from "@/components/proxy/ClaudeDesktopRouteToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
+import { useSwitchProxyProvider } from "@/lib/query/proxy";
 import UsageScriptModal from "@/components/UsageScriptModal";
 import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
 import PromptPanel from "@/components/prompts/PromptPanel";
@@ -253,12 +254,32 @@ function App() {
     takeoverStatus,
     status: proxyStatus,
   } = useProxyStatus();
+  const switchProxyProvider = useSwitchProxyProvider();
   const isCurrentAppTakeoverActive = takeoverStatus?.[activeApp] || false;
   const activeProviderId = useMemo(() => {
     const target = proxyStatus?.active_targets?.find(
       (t) => t.app_type === activeApp,
     );
     return target?.provider_id;
+  }, [proxyStatus?.active_targets, activeApp]);
+
+  // 按 provider_id 分组的活跃 session 映射（用于 Session 级路由 UI）
+  const sessionsByProvider = useMemo(() => {
+    const mapping: Record<string, import("@/types/proxy").SessionRouteEntry[]> = {};
+    // 收集当前 app_type 下所有 target 的 sessions（不止 current 那个 target）
+    const targets = proxyStatus?.active_targets?.filter(
+      (t) => t.app_type === activeApp,
+    );
+    if (!targets || targets.length === 0) return mapping;
+    for (const target of targets) {
+      for (const session of target.sessions ?? []) {
+        if (!mapping[session.providerId]) {
+          mapping[session.providerId] = [];
+        }
+        mapping[session.providerId].push(session);
+      }
+    }
+    return mapping;
   }, [proxyStatus?.active_targets, activeApp]);
 
   const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
@@ -296,6 +317,22 @@ function App() {
     activeApp,
     isProxyRunning,
     isProxyRunning && isCurrentAppTakeoverActive,
+  );
+
+  // 统一的供应商切换入口：代理接管模式下走 switchProxyProvider（只改全局默认），
+  // 非代理模式走 switchProvider（修改配置文件）
+  const isProxyTakeoverActive = isProxyRunning && isCurrentAppTakeoverActive;
+  const handleSwitch = useCallback(
+    (provider: Provider) => {
+      if (isProxyTakeoverActive) {
+        return switchProxyProvider.mutateAsync({
+          appType: activeApp,
+          providerId: provider.id,
+        });
+      }
+      return switchProvider(provider);
+    },
+    [isProxyTakeoverActive, switchProxyProvider, activeApp, switchProvider],
   );
 
   const disableOmoMutation = useDisableCurrentOmo();
@@ -955,7 +992,7 @@ function App() {
                         isProxyRunning && isCurrentAppTakeoverActive
                       }
                       activeProviderId={activeProviderId}
-                      onSwitch={switchProvider}
+                      onSwitch={handleSwitch}
                       onEdit={(provider) => {
                         setEditingProvider(provider);
                       }}
@@ -992,6 +1029,7 @@ function App() {
                             ? switchProvider
                             : undefined
                       }
+                      sessionsByProvider={sessionsByProvider}
                     />
                   </motion.div>
                 </AnimatePresence>

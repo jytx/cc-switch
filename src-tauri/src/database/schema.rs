@@ -369,11 +369,18 @@ impl Database {
         let mut version = Self::get_user_version(conn)?;
 
         if version > SCHEMA_VERSION {
-            conn.execute("ROLLBACK TO schema_migration;", []).ok();
-            conn.execute("RELEASE schema_migration;", []).ok();
-            return Err(AppError::Database(format!(
-                "数据库版本过新（{version}），当前应用仅支持 {SCHEMA_VERSION}，请升级应用后再尝试。"
-            )));
+            // 兼容降级：v11 是 session_routes 实验遗留，安全回退
+            if version == 11 && SCHEMA_VERSION == 10 {
+                log::info!("检测到数据库版本 v11（session_routes 实验遗留），安全降级到 v10");
+                Self::set_user_version(conn, SCHEMA_VERSION)?;
+                version = SCHEMA_VERSION;
+            } else {
+                conn.execute("ROLLBACK TO schema_migration;", []).ok();
+                conn.execute("RELEASE schema_migration;", []).ok();
+                return Err(AppError::Database(format!(
+                    "数据库版本过新（{version}），当前应用仅支持 {SCHEMA_VERSION}，请升级应用后再尝试。"
+                )));
+            }
         }
 
         let result = (|| {

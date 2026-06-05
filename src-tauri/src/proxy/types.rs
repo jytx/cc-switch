@@ -97,6 +97,9 @@ pub struct ActiveTarget {
     pub app_type: String, // "Claude" | "Codex" | "Gemini"
     pub provider_name: String,
     pub provider_id: String,
+    /// 该 provider 下的活跃 session 列表
+    #[serde(default)]
+    pub sessions: Vec<crate::proxy::session_router::SessionRouteEntry>,
 }
 
 /// 代理服务器信息

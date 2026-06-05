@@ -33,6 +33,30 @@ export interface ActiveTarget {
   app_type: string;
   provider_name: string;
   provider_id: string;
+  sessions?: SessionRouteEntry[];
+}
+
+// Session 级路由相关类型
+
+export interface SessionRouteEntry {
+  sessionId: string;
+  appType: string;
+  providerId: string;
+  displayName: string;
+  projectDir: string | null;
+  lastActiveAt: number;
+  /** 是否有显式覆盖（true = 用户手动设置，false = 继承全局） */
+  isRouted: boolean;
+}
+
+export interface ActiveSessionInfo {
+  sessionId: string;
+  appType: string;
+  providerId: string;
+  displayName: string;
+  projectDir: string | null;
+  lastActiveAt: number;
+  source: "header" | "metadataUserId" | "metadataSessionId" | "generated";
 }
 
 export interface ProxyServerInfo {

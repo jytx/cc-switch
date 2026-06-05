@@ -326,6 +326,7 @@ impl RequestForwarder {
         headers: axum::http::HeaderMap,
         extensions: Extensions,
         providers: Vec<Provider>,
+        is_session_routed: bool,
     ) -> Result<ForwardResult, ForwardError> {
         let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
         {
@@ -335,7 +336,14 @@ impl RequestForwarder {
         }
         let result = self
             .forward_with_retry_inner(
-                app_type, method, endpoint, body, headers, extensions, providers,
+                app_type,
+                method,
+                endpoint,
+                body,
+                headers,
+                extensions,
+                providers,
+                is_session_routed,
             )
             .await;
         // 把 guard 注入到 Ok 结果，让它随响应一起流转到 response_processor，
@@ -366,6 +374,7 @@ impl RequestForwarder {
         headers: axum::http::HeaderMap,
         extensions: Extensions,
         providers: Vec<Provider>,
+        is_session_routed: bool,
     ) -> Result<ForwardResult, ForwardError> {
         // 获取适配器
         let adapter = get_adapter(app_type);
@@ -470,7 +479,9 @@ impl RequestForwarder {
                         .await;
 
                     // 更新当前应用类型使用的 provider
-                    {
+                    // 注意：如果是 session override 触发的请求，不要写回 current_providers，
+                    // 否则会覆盖用户在 UI 上手动选择的全局默认供应商。
+                    if !is_session_routed {
                         let mut current_providers = self.current_providers.write().await;
                         current_providers.insert(
                             app_type_str.to_string(),
@@ -572,7 +583,8 @@ impl RequestForwarder {
                                     )
                                     .await;
 
-                                    {
+                                    // session override 触发的请求不写回 current_providers
+                                    if !is_session_routed {
                                         let mut current_providers =
                                             self.current_providers.write().await;
                                         current_providers.insert(
@@ -880,7 +892,8 @@ impl RequestForwarder {
                                     )
                                     .await;
 
-                                    {
+                                    // session override 触发的请求不写回 current_providers
+                                    if !is_session_routed {
                                         let mut current_providers =
                                             self.current_providers.write().await;
                                         current_providers.insert(
@@ -1776,7 +1789,35 @@ impl RequestForwarder {
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
-        log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
+        let msg_count = filtered_body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let tool_count = filtered_body
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let is_stream = filtered_body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        // 提取最后一条用户消息的前 80 字符，用于定位请求意图
+        let last_user_msg = filtered_body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .and_then(|msgs| msgs.last())
+            .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+            .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+            .map(|s| {
+                let truncated = s.chars().take(80).collect::<String>();
+                if truncated.len() < s.len() { format!("{truncated}…") } else { truncated }
+            })
+            .unwrap_or_else(|| "<none>".to_string());
+        log::info!(
+            "[{tag}] >>> 请求 URL: {url} (model={request_model}, msgs={msg_count}, tools={tool_count}, stream={is_stream}) [{last_user_msg}]"
+        );
         if log::log_enabled!(log::Level::Debug) {
             if let Ok(body_str) = serde_json::to_string(&filtered_body) {
                 log::debug!(
