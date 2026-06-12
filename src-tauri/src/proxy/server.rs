@@ -297,6 +297,7 @@ impl ProxyServer {
                 project_dir: info.project_dir.clone(),
                 last_active_at: info.last_active_at,
                 is_routed,
+                is_alive: crate::proxy::session_router::is_claude_session_alive(&info.session_id),
             };
             sessions_by_target
                 .entry((info.app_type.clone(), effective_provider))

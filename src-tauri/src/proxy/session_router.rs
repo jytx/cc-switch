@@ -80,6 +80,8 @@ pub struct SessionRouteEntry {
     pub last_active_at: i64,
     /// 是否有显式覆盖（true = 用户手动设置，false = 继承全局）
     pub is_routed: bool,
+    /// 对应的客户端进程是否存活（通过 ~/.claude/sessions/ 中的 PID 检查）
+    pub is_alive: bool,
 }
 
 /// 获取 JSON 持久化文件路径
@@ -298,6 +300,7 @@ impl SessionRouter {
                     project_dir: info.project_dir.clone(),
                     last_active_at: info.last_active_at,
                     is_routed,
+                    is_alive: is_claude_session_alive(sid),
                 }
             })
             .collect();
@@ -472,6 +475,58 @@ pub fn find_project_dir_from_claude_sessions(session_id: &str) -> Option<String>
     }
 
     None
+}
+
+/// 检查 Claude Code session 对应的客户端进程是否存活
+///
+/// 从 `~/.claude/sessions/` 中找到匹配 sessionId 的文件，读取其 `pid` 字段，
+/// 检查该 PID 进程是否仍在运行。
+pub fn is_claude_session_alive(session_id: &str) -> bool {
+    let sessions_dir = match dirs::home_dir() {
+        Some(h) => h.join(".claude").join("sessions"),
+        None => return true, // 无法判断时假设存活，避免误清理
+    };
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return true,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        if !content.contains(session_id) {
+            continue;
+        }
+
+        let session: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if session.get("sessionId").and_then(|v| v.as_str()) == Some(session_id) {
+            let pid = match session.get("pid").and_then(|v| v.as_u64()) {
+                Some(p) => p,
+                None => return true,
+            };
+            // kill -0 <pid> 不发信号，只检查进程是否存在
+            return std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(true);
+        }
+    }
+
+    // session 文件中找不到 → 非标准 Claude Code 客户端，假设存活
+    true
 }
 
 /// 从 project_dir 生成显示名称

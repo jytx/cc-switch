@@ -132,14 +132,16 @@ export function SessionPill({ session, appId, providers }: SessionPillProps) {
           "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5",
           "text-[10px] font-medium border cursor-pointer select-none",
           "transition-colors hover:brightness-110",
-          session.isRouted
-            ? `${color.bg} ${color.border} ${color.text}`
-            : `${color.bg} ${color.border} ${color.text} opacity-60`,
+          !session.isAlive
+            ? "bg-gray-500/10 border-dashed border-gray-400/40 text-gray-500 dark:text-gray-400 opacity-50"
+            : session.isRouted
+              ? `${color.bg} ${color.border} ${color.text}`
+              : `${color.bg} ${color.border} ${color.text} opacity-60`,
         )}
-        title={`点击管理 session · ID: ${shortId}${session.projectDir ? ` · ${session.projectDir}` : ""}`}
+        title={`点击管理 session · ID: ${shortId}${session.projectDir ? ` · ${session.projectDir}` : ""}${!session.isAlive ? " · 已关闭" : ""}`}
         onClick={handleToggle}
       >
-        <span className={cn("inline-block w-1.5 h-1.5 rounded-full", color.dot)} />
+        <span className={cn("inline-block w-1.5 h-1.5 rounded-full", session.isAlive ? color.dot : "bg-gray-400")} />
         {label}
         {showProject && (
           <span className="opacity-60 ml-0.5">
@@ -166,6 +168,9 @@ export function SessionPill({ session, appId, providers }: SessionPillProps) {
                 </span>
               )}
               <span>⏱ {relativeTime(session.lastActiveAt)}</span>
+              {!session.isAlive && (
+                <span className="text-orange-500">已关闭</span>
+              )}
             </div>
           </div>
 

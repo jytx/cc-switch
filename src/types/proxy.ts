@@ -47,6 +47,8 @@ export interface SessionRouteEntry {
   lastActiveAt: number;
   /** 是否有显式覆盖（true = 用户手动设置，false = 继承全局） */
   isRouted: boolean;
+  /** 对应的客户端进程是否存活 */
+  isAlive: boolean;
 }
 
 export interface ActiveSessionInfo {
