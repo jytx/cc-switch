@@ -309,9 +309,11 @@ impl ProxyServer {
         status.active_targets = current_providers
             .iter()
             .map(|(app_type, (provider_id, provider_name))| {
-                let sessions = sessions_by_target
+                let mut sessions = sessions_by_target
                     .remove(&(app_type.clone(), provider_id.clone()))
                     .unwrap_or_default();
+                // 按 last_active_at 降序排列，保证前端展示顺序稳定
+                sessions.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
                 ActiveTarget {
                     app_type: app_type.clone(),
                     provider_id: provider_id.clone(),
@@ -322,8 +324,9 @@ impl ProxyServer {
             .collect();
 
         // 补充：session 路由到其他 provider 但不在 current_providers 中的条目
-        for ((app_type, provider_id), sessions) in sessions_by_target {
+        for ((app_type, provider_id), mut sessions) in sessions_by_target {
             if !sessions.is_empty() {
+                sessions.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
                 let provider_name = self
                     .state
                     .db
