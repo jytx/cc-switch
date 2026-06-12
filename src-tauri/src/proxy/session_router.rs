@@ -130,7 +130,14 @@ pub struct SessionRouter {
     overrides: RwLock<HashMap<(String, String), String>>,
     /// 持久化文件的写锁（防止并发写入冲突）
     file_lock: Mutex<()>,
+    /// session 存活状态缓存：session_id → is_alive
+    alive_cache: RwLock<HashMap<String, bool>>,
+    /// 存活缓存上次刷新时间（epoch 毫秒）
+    alive_cache_updated_at: RwLock<i64>,
 }
+
+/// 存活缓存刷新间隔（毫秒）
+const ALIVE_CACHE_TTL_MS: i64 = 30_000;
 
 impl SessionRouter {
     /// 创建 SessionRouter 并从 JSON 文件恢复持久化状态
@@ -157,10 +164,48 @@ impl SessionRouter {
             sessions: RwLock::new(HashMap::new()),
             overrides: RwLock::new(overrides),
             file_lock: Mutex::new(()),
+            alive_cache: RwLock::new(HashMap::new()),
+            alive_cache_updated_at: RwLock::new(0),
         }
     }
 
-    /// 记录一个从请求中发现的 session（纯内存，不持久化）
+    /// 刷新存活缓存（仅对内存中已记录的 session 检查）
+    ///
+    /// 如果距离上次刷新不到 ALIVE_CACHE_TTL_MS，跳过。
+    async fn refresh_alive_cache(&self) {
+        let now = now_millis();
+        {
+            let last = *self.alive_cache_updated_at.read().await;
+            if now - last < ALIVE_CACHE_TTL_MS {
+                return;
+            }
+        }
+
+        // 收集当前所有 session ID
+        let session_ids: Vec<String> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().map(|info| info.session_id.clone()).collect()
+        };
+
+        // 逐个检查存活状态
+        let mut cache = self.alive_cache.write().await;
+        for sid in &session_ids {
+            let alive = check_session_alive(sid);
+            cache.insert(sid.clone(), alive);
+        }
+        // 清除已不在 sessions 中的缓存条目
+        let sid_set: std::collections::HashSet<String> = session_ids.into_iter().collect();
+        cache.retain(|k, _| sid_set.contains(k));
+
+        *self.alive_cache_updated_at.write().await = now;
+    }
+
+    /// 查询单个 session 是否存活（带缓存）
+    pub async fn is_session_alive(&self, session_id: &str) -> bool {
+        self.refresh_alive_cache().await;
+        let cache = self.alive_cache.read().await;
+        cache.get(session_id).copied().unwrap_or(true)
+    }
     pub async fn record_session(
         &self,
         app_type: &str,
@@ -278,8 +323,12 @@ impl SessionRouter {
 
     /// 列出指定 app_type 的所有活跃 session
     pub async fn list_sessions(&self, app_type: &str) -> Vec<SessionRouteEntry> {
+        // 先刷新存活缓存
+        self.refresh_alive_cache().await;
+
         let sessions = self.sessions.read().await;
         let overrides = self.overrides.read().await;
+        let alive_cache = self.alive_cache.read().await;
 
         let mut entries: Vec<SessionRouteEntry> = sessions
             .iter()
@@ -300,7 +349,7 @@ impl SessionRouter {
                     project_dir: info.project_dir.clone(),
                     last_active_at: info.last_active_at,
                     is_routed,
-                    is_alive: is_claude_session_alive(sid),
+                    is_alive: alive_cache.get(sid).copied().unwrap_or(true),
                 }
             })
             .collect();
@@ -477,14 +526,11 @@ pub fn find_project_dir_from_claude_sessions(session_id: &str) -> Option<String>
     None
 }
 
-/// 检查 Claude Code session 对应的客户端进程是否存活
-///
-/// 从 `~/.claude/sessions/` 中找到匹配 sessionId 的文件，读取其 `pid` 字段，
-/// 检查该 PID 进程是否仍在运行。
-pub fn is_claude_session_alive(session_id: &str) -> bool {
+/// 检查单个 session 对应的客户端进程是否存活（底层实现，不使用缓存）
+fn check_session_alive(session_id: &str) -> bool {
     let sessions_dir = match dirs::home_dir() {
         Some(h) => h.join(".claude").join("sessions"),
-        None => return true, // 无法判断时假设存活，避免误清理
+        None => return true,
     };
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(e) => e,
@@ -516,7 +562,6 @@ pub fn is_claude_session_alive(session_id: &str) -> bool {
                 Some(p) => p,
                 None => return true,
             };
-            // kill -0 <pid> 不发信号，只检查进程是否存在
             return std::process::Command::new("kill")
                 .args(["-0", &pid.to_string()])
                 .output()
@@ -525,7 +570,6 @@ pub fn is_claude_session_alive(session_id: &str) -> bool {
         }
     }
 
-    // session 文件中找不到 → 非标准 Claude Code 客户端，假设存活
     true
 }
 
