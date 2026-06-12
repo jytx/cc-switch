@@ -62,9 +62,9 @@ pub async fn get_provider_sessions(
         .map_err(|e| e.to_string())
 }
 
-/// 在 Finder 中打开指定路径
+/// 在系统文件管理器中打开指定路径（macOS Finder / Windows Explorer / Linux 文件管理器）
 #[tauri::command]
-pub async fn open_path_in_finder(
+pub async fn open_path_in_explorer(
     app: tauri::AppHandle,
     path: String,
 ) -> Result<(), String> {

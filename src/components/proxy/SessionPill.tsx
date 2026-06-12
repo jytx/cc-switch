@@ -168,7 +168,7 @@ export function SessionPill({ session, appId, providers }: SessionPillProps) {
                   className="cursor-pointer hover:text-primary hover:underline"
                   onClick={(e) => {
                     e.stopPropagation();
-                    proxyApi.openPathInFinder(session.projectDir!);
+                    proxyApi.openPathInExplorer(session.projectDir!);
                   }}
                 >
                   📁 {session.projectDir.split("/").pop()}

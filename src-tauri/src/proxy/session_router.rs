@@ -562,10 +562,23 @@ fn check_session_alive(session_id: &str) -> bool {
                 Some(p) => p,
                 None => return true,
             };
+            // 跨平台检查进程是否存活
+            // Unix: kill -0 <pid> 不发信号，只检查进程存在
+            // Windows: tasklist /FI "PID eq <pid>" 查找进程
+            #[cfg(unix)]
             return std::process::Command::new("kill")
                 .args(["-0", &pid.to_string()])
                 .output()
                 .map(|o| o.status.success())
+                .unwrap_or(true);
+            #[cfg(windows)]
+            return std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .map(|o| {
+                    let out = String::from_utf8_lossy(&o.stdout);
+                    out.contains(&pid.to_string())
+                })
                 .unwrap_or(true);
         }
     }
