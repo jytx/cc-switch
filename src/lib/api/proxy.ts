@@ -136,4 +136,9 @@ export const proxyApi = {
   ): Promise<void> {
     return invoke("remove_session_route", { appType, sessionId });
   },
+
+  // 在 Finder 中打开路径
+  async openPathInFinder(path: string): Promise<void> {
+    return invoke("open_path_in_finder", { path });
+  },
 };

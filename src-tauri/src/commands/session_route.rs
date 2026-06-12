@@ -4,6 +4,7 @@
 
 use crate::proxy::session_router::{ActiveSessionInfo, SessionRouteEntry};
 use crate::store::AppState;
+use tauri_plugin_opener::OpenerExt;
 
 /// 列出指定应用的所有活跃 session 路由
 #[tauri::command]
@@ -59,4 +60,15 @@ pub async fn get_provider_sessions(
         .get_provider_sessions(&app_type, &provider_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// 在 Finder 中打开指定路径
+#[tauri::command]
+pub async fn open_path_in_finder(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), String> {
+    app.opener()
+        .open_path(&path, None::<String>)
+        .map_err(|e| format!("打开路径失败: {e}"))
 }

@@ -163,7 +163,14 @@ export function SessionPill({ session, appId, providers }: SessionPillProps) {
             <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5 text-[10px] text-muted-foreground">
               <span>ID: {shortId}</span>
               {session.projectDir && (
-                <span title={session.projectDir}>
+                <span
+                  title={session.projectDir}
+                  className="cursor-pointer hover:text-primary hover:underline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    proxyApi.openPathInFinder(session.projectDir!);
+                  }}
+                >
                   📁 {session.projectDir.split("/").pop()}
                 </span>
               )}

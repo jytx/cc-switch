@@ -1440,6 +1440,7 @@ pub fn run() {
             commands::set_session_route,
             commands::remove_session_route,
             commands::get_provider_sessions,
+            commands::open_path_in_finder,
         ]);
 
     let app = builder
