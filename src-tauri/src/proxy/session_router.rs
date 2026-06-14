@@ -172,6 +172,7 @@ impl SessionRouter {
     /// 刷新存活缓存（对内存 + 持久化文件中的所有 session 检查）
     ///
     /// 如果距离上次刷新不到 ALIVE_CACHE_TTL_MS，跳过。
+    /// 检测到已关闭的 Claude session 时自动清除（避免 tag 无限累积）。
     async fn refresh_alive_cache(&self) {
         let now = now_millis();
         {
@@ -201,16 +202,58 @@ impl SessionRouter {
             }
         }
 
-        // 逐个检查存活状态（缓存 key 用 session_id，因为全局唯一）
-        let mut cache = self.alive_cache.write().await;
-        for (app_type, sid) in &pairs {
-            let alive = check_session_alive(app_type, sid);
-            cache.insert(sid.clone(), alive);
+        // 逐个检查存活状态，收集已关闭的 session
+        let mut dead_sessions: Vec<(String, String)> = Vec::new();
+        let mut live_sids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        {
+            let mut cache = self.alive_cache.write().await;
+            for (app_type, sid) in &pairs {
+                let alive = check_session_alive(app_type, sid);
+                if alive {
+                    cache.insert(sid.clone(), true);
+                    live_sids.insert(sid.clone());
+                } else {
+                    // Claude session 已关闭 → 收集起来清除
+                    dead_sessions.push((app_type.clone(), sid.clone()));
+                    cache.remove(sid);
+                }
+            }
+            // 清除已不在检查范围内的缓存条目
+            cache.retain(|k, _| live_sids.contains(k));
         }
-        // 清除已不在检查范围内的缓存条目
-        let sid_set: std::collections::HashSet<String> =
-            pairs.into_iter().map(|(_, sid)| sid).collect();
-        cache.retain(|k, _| sid_set.contains(k));
+
+        // 自动清除已关闭的 Claude session（内存 + override + 持久化文件）
+        if !dead_sessions.is_empty() {
+            log::info!(
+                "[SessionRouter] 检测到 {} 个已关闭的 Claude session，自动清除",
+                dead_sessions.len()
+            );
+            // 清除内存 sessions 记录
+            {
+                let mut sessions = self.sessions.write().await;
+                for (at, sid) in &dead_sessions {
+                    sessions.remove(&(at.clone(), sid.clone()));
+                }
+            }
+            // 清除内存 overrides 记录
+            {
+                let mut overrides = self.overrides.write().await;
+                for (at, sid) in &dead_sessions {
+                    overrides.remove(&(at.clone(), sid.clone()));
+                }
+            }
+            // 清除持久化文件中的记录（批量写入）
+            if dead_sessions.iter().any(|(at, _)| at == "claude") {
+                let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let mut data = load_from_file();
+                for (at, sid) in &dead_sessions {
+                    if at == "claude" {
+                        data.overrides.remove(&format!("{at}:{sid}"));
+                    }
+                }
+                save_to_file(&data);
+            }
+        }
 
         *self.alive_cache_updated_at.write().await = now;
     }
