@@ -169,7 +169,7 @@ impl SessionRouter {
         }
     }
 
-    /// 刷新存活缓存（仅对内存中已记录的 session 检查）
+    /// 刷新存活缓存（对内存 + 持久化文件中的所有 session 检查）
     ///
     /// 如果距离上次刷新不到 ALIVE_CACHE_TTL_MS，跳过。
     async fn refresh_alive_cache(&self) {
@@ -181,11 +181,20 @@ impl SessionRouter {
             }
         }
 
-        // 收集当前所有 session ID
-        let session_ids: Vec<String> = {
+        // 收集需要检查的 session ID（内存中的 + 持久化文件中的）
+        let mut session_ids: Vec<String> = {
             let sessions = self.sessions.read().await;
             sessions.values().map(|info| info.session_id.clone()).collect()
         };
+        // 补充持久化文件中的 session（重启后内存中没有的）
+        let persisted = load_from_file();
+        for key in persisted.overrides.keys() {
+            if let Some((_, session_id)) = key.split_once(':') {
+                if !session_ids.contains(&session_id.to_string()) {
+                    session_ids.push(session_id.to_string());
+                }
+            }
+        }
 
         // 逐个检查存活状态
         let mut cache = self.alive_cache.write().await;
@@ -193,7 +202,7 @@ impl SessionRouter {
             let alive = check_session_alive(sid);
             cache.insert(sid.clone(), alive);
         }
-        // 清除已不在 sessions 中的缓存条目
+        // 清除已不在检查范围内的缓存条目
         let sid_set: std::collections::HashSet<String> = session_ids.into_iter().collect();
         cache.retain(|k, _| sid_set.contains(k));
 
