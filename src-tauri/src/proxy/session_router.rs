@@ -181,29 +181,35 @@ impl SessionRouter {
             }
         }
 
-        // 收集需要检查的 session ID（内存中的 + 持久化文件中的）
-        let mut session_ids: Vec<String> = {
+        // 收集需要检查的 (app_type, session_id) 对（内存中的 + 持久化文件中的）
+        let mut pairs: Vec<(String, String)> = {
             let sessions = self.sessions.read().await;
-            sessions.values().map(|info| info.session_id.clone()).collect()
+            sessions
+                .values()
+                .map(|info| (info.app_type.clone(), info.session_id.clone()))
+                .collect()
         };
         // 补充持久化文件中的 session（重启后内存中没有的）
         let persisted = load_from_file();
+        let memory_keys: std::collections::HashSet<(String, String)> = pairs.iter().cloned().collect();
         for key in persisted.overrides.keys() {
-            if let Some((_, session_id)) = key.split_once(':') {
-                if !session_ids.contains(&session_id.to_string()) {
-                    session_ids.push(session_id.to_string());
+            if let Some((app_type, session_id)) = key.split_once(':') {
+                let pair = (app_type.to_string(), session_id.to_string());
+                if !memory_keys.contains(&pair) {
+                    pairs.push(pair);
                 }
             }
         }
 
-        // 逐个检查存活状态
+        // 逐个检查存活状态（缓存 key 用 session_id，因为全局唯一）
         let mut cache = self.alive_cache.write().await;
-        for sid in &session_ids {
-            let alive = check_session_alive(sid);
+        for (app_type, sid) in &pairs {
+            let alive = check_session_alive(app_type, sid);
             cache.insert(sid.clone(), alive);
         }
         // 清除已不在检查范围内的缓存条目
-        let sid_set: std::collections::HashSet<String> = session_ids.into_iter().collect();
+        let sid_set: std::collections::HashSet<String> =
+            pairs.into_iter().map(|(_, sid)| sid).collect();
         cache.retain(|k, _| sid_set.contains(k));
 
         *self.alive_cache_updated_at.write().await = now;
@@ -536,7 +542,17 @@ pub fn find_project_dir_from_claude_sessions(session_id: &str) -> Option<String>
 }
 
 /// 检查单个 session 对应的客户端进程是否存活（底层实现，不使用缓存）
-fn check_session_alive(session_id: &str) -> bool {
+///
+/// - `claude` app：从 `~/.claude/sessions/<pid>.json` 读取 pid，检查进程存活
+/// - 其他 app（codex/gemini 等）：session 文件不含 pid，无法检查，返回 true（保持显示）
+/// - claude session 找不到对应文件：视为已关闭（返回 false）
+fn check_session_alive(app_type: &str, session_id: &str) -> bool {
+    // 仅 Claude Code 的 session 文件包含 pid 字段，可检查存活
+    // 其他客户端（codex/gemini 等）的 session 文件不含 pid，无法检查，默认存活
+    if app_type != "claude" {
+        return true;
+    }
+
     let sessions_dir = match dirs::home_dir() {
         Some(h) => h.join(".claude").join("sessions"),
         None => return true,
@@ -579,7 +595,7 @@ fn check_session_alive(session_id: &str) -> bool {
                 .args(["-0", &pid.to_string()])
                 .output()
                 .map(|o| o.status.success())
-                .unwrap_or(true);
+                .unwrap_or(false);
             #[cfg(windows)]
             return std::process::Command::new("tasklist")
                 .args(["/FI", &format!("PID eq {pid}"), "/NH"])
@@ -588,11 +604,12 @@ fn check_session_alive(session_id: &str) -> bool {
                     let out = String::from_utf8_lossy(&o.stdout);
                     out.contains(&pid.to_string())
                 })
-                .unwrap_or(true);
+                .unwrap_or(false);
         }
     }
 
-    true
+    // Claude session 在文件中找不到对应记录 → 视为已关闭
+    false
 }
 
 /// 从 project_dir 生成显示名称
