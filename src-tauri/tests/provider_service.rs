@@ -597,6 +597,14 @@ wire_api = "responses"
 
     let state = create_test_state_with_config(&initial_config).expect("create test state");
 
+    let mut proxy_config = state.db.get_proxy_config().await.expect("get proxy config");
+    proxy_config.listen_port = 0;
+    state
+        .db
+        .update_proxy_config(proxy_config)
+        .await
+        .expect("use ephemeral proxy port");
+
     ProviderService::switch(&state, AppType::Codex, "deepseek-provider")
         .expect("switch from official subscription to DeepSeek");
 
@@ -623,6 +631,12 @@ wire_api = "responses"
         .set_takeover_for_app("codex", true)
         .await
         .expect("enable Codex takeover");
+    let proxy_status = state
+        .proxy_service
+        .get_status()
+        .await
+        .expect("read proxy status after takeover");
+    let codex_proxy_base_url = format!("http://127.0.0.1:{}/v1", proxy_status.port);
 
     let auth_after_takeover: serde_json::Value =
         read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth after takeover");
@@ -634,7 +648,7 @@ wire_api = "responses"
     let config_after_takeover =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config");
     assert!(
-        config_after_takeover.contains("http://127.0.0.1:15721/v1"),
+        config_after_takeover.contains(&codex_proxy_base_url),
         "enabling takeover should point Codex config.toml at the local proxy"
     );
     assert!(
@@ -1910,4 +1924,63 @@ fn provider_service_delete_current_provider_returns_error() {
         ),
         other => panic!("expected Config/Message error, got {other:?}"),
     }
+}
+
+#[test]
+fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_back() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    // 接管态 Claude Live，且 DB 中无备份（模拟切换 app_config_dir 后新库首启的场景）
+    let taken_over_live = json!({
+        "env": {
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+            "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED"
+        }
+    });
+    let settings_path = get_claude_settings_path();
+    std::fs::create_dir_all(settings_path.parent().expect("settings dir")).expect("create dir");
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&taken_over_live).expect("serialize taken over live"),
+    )
+    .expect("write taken over live");
+
+    let state = create_test_state().expect("create test state");
+
+    // 模拟历史异常：接管态 Live 已被导入成 current provider（SSOT 被污染）
+    let provider = Provider::with_id(
+        "default".to_string(),
+        "default".to_string(),
+        taken_over_live.clone(),
+        None,
+    );
+    state
+        .db
+        .save_provider(AppType::Claude.as_str(), &provider)
+        .expect("save placeholder provider");
+    state
+        .db
+        .set_current_provider(AppType::Claude.as_str(), "default")
+        .expect("set current provider");
+
+    futures::executor::block_on(state.proxy_service.recover_from_crash())
+        .expect("recover from crash");
+
+    let live_after: serde_json::Value =
+        read_json_file(&settings_path).expect("read live settings after recovery");
+    let env = live_after.get("env").cloned().unwrap_or_else(|| json!({}));
+    assert_ne!(
+        env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()),
+        Some("PROXY_MANAGED"),
+        "recovery must not write the placeholder back to live"
+    );
+    assert!(
+        env.get("ANTHROPIC_BASE_URL")
+            .and_then(|v| v.as_str())
+            .map(|url| !url.starts_with("http://127.0.0.1"))
+            .unwrap_or(true),
+        "recovery must drop the local proxy base URL"
+    );
 }
